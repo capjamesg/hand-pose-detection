@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Hand Pose</title>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+        <script src="https://cdn.jsdelivr.net/npm/js-confetti@latest/dist/js-confetti.browser.js"></script>
+        <style>
+            #canvas {
+                position: absolute;
+                top: 0;
+                left: 0;
+                z-index: 3;
+            }
+            #video {
+                position: absolute;
+                top: 0;
+                left: 0;
+            }
+            img {
+                position: absolute;
+                top: 0;
+                left: 0;
+                z-index: 2;
+                /* opacity: 0; */
+                opacity: 0.5;
+            }
+            #message {
+                z-index: 3;
+                position: absolute;
+                font-size: 100px;
+            }
+            html {
+                height: 1000px;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas" width="640" height="480"></canvas>
+        <video id="video" width="640" height="480" autoplay></video>
+        <p id="message"></p>
+        <script>
+            // get access to webcam
+            // Create a detector.
+            var detector = null;
+
+            const video = document.getElementById("video");
+
+            const model = handPoseDetection.SupportedModels.MediaPipeHands;
+            const detectorConfig = {
+                runtime: 'tfjs', // or 'tfjs',
+                solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands',
+                modelType: 'full'
+            };
+
+            var user_angle_similarity_buffer = []
+
+            var canvas = document.getElementById("canvas");
+            var ctx = canvas.getContext("2d");
+
+            // tip to mcp
+            var fingers = {
+                "thumb": [4, 2],
+                "index": [8, 5],
+                "middle": [12, 9],
+                "ring": [16, 13],
+                "pinky": [20, 17]
+            };
+
+
+            function isInBoundary (angle, lower, upper) {
+                return angle > lower && angle < upper;
+            }
+
+            function getAngle(coordinate, origin) {
+                var result = Math.atan2(coordinate.y - origin.y, coordinate.x - origin.x);
+                return result;
+            }
+
+            function scrollPage (direction) {
+                var scroll = window.scrollY;
+
+                if (direction == "up") {
+                    window.scrollTo(0, scroll - 100);
+                } else if (direction == "down") {
+                    window.scrollTo(0, scroll + 100);
+                }
+            }
+
+            function isMakingPeaceSign (keypoints) {
+                var index_tip = keypoints[8];
+                var index_mcp = keypoints[5];
+
+                var middle_tip = keypoints[12];
+                var middle_mcp = keypoints[9];
+
+                var index_angle = getAngle(index_mcp, index_tip);
+                
+                index_angle = index_angle * 180 / Math.PI;
+
+                var middle_angle = getAngle(middle_mcp, middle_tip);
+
+                middle_angle = middle_angle * 180 / Math.PI;
+
+                // if both between 80 and 100 degrees
+                if (isInBoundary(index_angle, 50, 110) && isInBoundary(middle_angle, 50, 110)) {
+                    return true;
+                }
+
+                return false;
+            }
+
+            var palm_buffer = [];
+            var wrist_z_buffer = [];
+
+            async function getHandPoses () {
+                const hands = await detector.estimateHands(video);
+
+                if (palm_buffer.length > 50) {
+                    palm_buffer.shift();
+                }
+
+                if (wrist_z_buffer.length > 50) {
+                    wrist_z_buffer.shift();
+                }
+
+                if (hands.length == 0) {
+                    requestAnimationFrame(getHandPoses);
+                    return;
+                }
+
+                // plot landmarks
+                var keypoints = hands[0].keypoints;
+
+                console.log(hands[0].keypoints3D);
+
+                wrist_z_buffer.push(hands[0].keypoints3D[0].z);
+
+                if (wrist_z_buffer.length > 20) {
+                    console.log(wrist_z_buffer[0] - wrist_z_buffer[wrist_z_buffer.length - 1]);
+                }
+
+                if (wrist_z_buffer.length > 20 && wrist_z_buffer[0] - wrist_z_buffer[wrist_z_buffer.length - 1] > 0.01) {
+                    document.body.style.backgroundColor = "lightgreen";
+                } else if (wrist_z_buffer.length > 20 && wrist_z_buffer[0] - wrist_z_buffer[wrist_z_buffer.length - 1] < -0.01) {
+                    document.body.style.backgroundColor = "lavender";
+                }
+
+                // draw landmarks
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                for (var i = 0; i < keypoints.length; i++) {
+                    var x = keypoints[i].x;
+                    var y = keypoints[i].y;
+                    ctx.beginPath();
+                    ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                    ctx.fillStyle = "red";
+                    ctx.fill();
+                }
+
+                var fingers_pointing_up = 0;
+
+                // if four fingers are all pointing > 60 degrees, then palm emoji
+                for (var finger of Object.keys(fingers)) {
+                    var finger_tip = keypoints[fingers[finger][1]];
+                    var finger_mcp = keypoints[fingers[finger][0]];
+
+                    // skip thumb
+                    if (finger == "thumb") {
+                        continue;
+                    }
+
+                    var finger_angle = getAngle(finger_tip, finger_mcp);
+
+                    finger_angle = finger_angle * 180 / Math.PI;
+
+                    if (isInBoundary(finger_angle, 0, 200)) {
+                        fingers_pointing_up++;
+                    }
+                }
+
+                if (fingers_pointing_up == 0) {
+                    document.getElementById("message").innerHTML = "👊";
+                    requestAnimationFrame(getHandPoses);
+                    return;
+                }
+
+                if (fingers_pointing_up == 4) {
+                    var wrist = keypoints[0];
+                    palm_buffer.push(wrist)
+                    // if palm_buffer > 20 and first wrist y is 20% different
+                    if (palm_buffer.length > 20) {
+                        var first_wrist = palm_buffer[0];
+                        var last_wrist = palm_buffer[palm_buffer.length - 1];
+
+                        // if scroll up and down
+                        if (first_wrist.y - last_wrist.y > 0.3) {
+                            scrollPage("up");
+                            document.getElementById("message").innerHTML = "👆";
+                        } else if (first_wrist.y - last_wrist.y < -0.3) {
+                            scrollPage("down");
+                            document.getElementById("message").innerHTML = "👇";
+                        }
+                    }
+
+                    document.getElementById("message").innerHTML = "🤚";
+                    requestAnimationFrame(getHandPoses);
+                    return;
+                }
+
+                if (isMakingPeaceSign(keypoints)) {
+                    console.log("✌️");
+                    document.getElementById("message").innerHTML = "✌️";
+                    requestAnimationFrame(getHandPoses);
+                    return;
+                }
+
+                var thumb_cmc = keypoints[4];
+                var thumb_tip = keypoints[2];
+
+                // get thumb angle
+                var thumb_angle = getAngle(thumb_tip, thumb_cmc);
+
+                thumb_angle = thumb_angle * 180 / Math.PI;
+
+                if (isInBoundary(thumb_angle, 80, 100)) {
+                    document.getElementById("message").innerHTML = "👍";
+                } else if (isInBoundary(thumb_angle, -100, -80)) {
+                    document.getElementById("message").innerHTML = "👎";
+                } else {
+                    document.getElementById("message").innerHTML = "";
+                }
+
+                // console.log(thumb_angle);
+
+                requestAnimationFrame(getHandPoses);
+            }
+
+            navigator.mediaDevices.getUserMedia({video: true})
+                .then(function(stream) {
+                    // flip video horizontally
+                    // video.style.transform = "scaleX(-1)";
+                    video.srcObject = stream;
+                    video.onloadedmetadata = async function(e) {
+                        video.play();
+                        // Create a detector.
+                        console.log("video is playing");
+                        detector = await handPoseDetection.createDetector(model, detectorConfig);
+
+                        getHandPoses();
+                    };
+                })
+                .catch(function(err) {
+                    console.log("An error occurred! " + err);
+                });
+        </script>
+    </body>
+</html>
